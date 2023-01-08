@@ -25,13 +25,15 @@ class Batch_Balanced_Dataset(object):
         For example, when select_data is "MJ-ST" and batch_ratio is "0.5-0.5",
         the 50% of the batch is filled with MJ and the other 50% of the batch is filled with ST.
         """
-        log = open(f'./saved_models/{opt.exp_name}/log_dataset.txt', 'a')
+        log = open(f'./saved_models/{opt.exp_name}/log_dataset.txt', 'a', encoding='utf8')
         dashed_line = '-' * 80
-        print(dashed_line)
         log.write(dashed_line + '\n')
-        print(f'dataset_root: {opt.train_data}\nopt.select_data: {opt.select_data}\nopt.batch_ratio: {opt.batch_ratio}')
         log.write(
             f'dataset_root: {opt.train_data}\nopt.select_data: {opt.select_data}\nopt.batch_ratio: {opt.batch_ratio}\n')
+        
+        if opt.verbose == 1:
+            print(dashed_line)
+            print(f'dataset_root: {opt.train_data}\nopt.select_data: {opt.select_data}\nopt.batch_ratio: {opt.batch_ratio}')
         assert len(opt.select_data) == len(opt.batch_ratio)
 
         _AlignCollate = AlignCollate(imgH=opt.imgH, imgW=opt.imgW, keep_ratio_with_pad=opt.PAD)
@@ -41,9 +43,9 @@ class Batch_Balanced_Dataset(object):
         Total_batch_size = 0
         for selected_d, batch_ratio_d in zip(opt.select_data, opt.batch_ratio):
             _batch_size = max(round(opt.batch_size * float(batch_ratio_d)), 1)
-            print(dashed_line)
+            
             log.write(dashed_line + '\n')
-            _dataset, _dataset_log = hierarchical_dataset(root=opt.train_data, opt=opt, select_data=[selected_d])
+            _dataset, _dataset_log = hierarchical_dataset(root=opt.train_data, opt=opt, select_data=[selected_d], train_mode=True)
             total_number_dataset = len(_dataset)
             log.write(_dataset_log)
 
@@ -59,7 +61,7 @@ class Batch_Balanced_Dataset(object):
                            for offset, length in zip(_accumulate(dataset_split), dataset_split)]
             selected_d_log = f'num total samples of {selected_d}: {total_number_dataset} x {opt.total_data_usage_ratio} (total_data_usage_ratio) = {len(_dataset)}\n'
             selected_d_log += f'num samples of {selected_d} per batch: {opt.batch_size} x {float(batch_ratio_d)} (batch_ratio) = {_batch_size}'
-            print(selected_d_log)
+            
             log.write(selected_d_log + '\n')
             batch_size_list.append(str(_batch_size))
             Total_batch_size += _batch_size
@@ -71,6 +73,10 @@ class Batch_Balanced_Dataset(object):
                 collate_fn=_AlignCollate, pin_memory=True)
             self.data_loader_list.append(_data_loader)
             self.dataloader_iter_list.append(iter(_data_loader))
+            
+            if opt.verbose == 1:
+                print(dashed_line)
+                print(selected_d_log)
 
         Total_batch_size_log = f'{dashed_line}\n'
         batch_size_sum = '+'.join(batch_size_list)
@@ -78,7 +84,8 @@ class Batch_Balanced_Dataset(object):
         Total_batch_size_log += f'{dashed_line}'
         opt.batch_size = Total_batch_size
 
-        print(Total_batch_size_log)
+        if opt.verbose == 1:
+            print(Total_batch_size_log)
         log.write(Total_batch_size_log + '\n')
         log.close()
 
@@ -104,11 +111,12 @@ class Batch_Balanced_Dataset(object):
         return balanced_batch_images, balanced_batch_texts
 
 
-def hierarchical_dataset(root, opt, select_data='/'):
+def hierarchical_dataset(root, opt, select_data='/', train_mode=False):
     """ select_data='/' contains all sub-directory of root directory """
     dataset_list = []
     dataset_log = f'dataset_root:    {root}\t dataset: {select_data[0]}'
-    print(dataset_log)
+    if opt.verbose == 1:
+        print(dataset_log)
     dataset_log += '\n'
     for dirpath, dirnames, filenames in os.walk(root + '/'):
         if not dirnames:
@@ -119,9 +127,10 @@ def hierarchical_dataset(root, opt, select_data='/'):
                     break
 
             if select_flag:
-                dataset = LmdbDataset(dirpath, opt)
+                dataset = LmdbDataset(dirpath, opt, opt.transforms) if train_mode else LmdbDataset(dirpath, opt)
                 sub_dataset_log = f'sub-directory:\t/{os.path.relpath(dirpath, root)}\t num samples: {len(dataset)}'
-                print(sub_dataset_log)
+                if opt.verbose == 1:
+                    print(sub_dataset_log)
                 dataset_log += f'{sub_dataset_log}\n'
                 dataset_list.append(dataset)
 
@@ -132,11 +141,13 @@ def hierarchical_dataset(root, opt, select_data='/'):
 
 class LmdbDataset(Dataset):
 
-    def __init__(self, root, opt):
+    def __init__(self, root, opt, transforms=None):
 
         self.root = root
         self.opt = opt
         self.env = lmdb.open(root, max_readers=32, readonly=True, lock=False, readahead=False, meminit=False)
+        self.transforms = transforms
+        
         if not self.env:
             print('cannot create lmdb from %s' % (root))
             sys.exit(0)
@@ -197,13 +208,16 @@ class LmdbDataset(Dataset):
             buf.seek(0)
 
             try:
-                if self.opt.rgb:
-                    img_buffer = np.frombuffer(buf.read(), dtype=np.uint8)
-                    img = cv2.cvtColor(cv2.imdecode(img_buffer, cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB)  # for color image
-                else:
-                    img_buffer = np.frombuffer(buf.read(), dtype=np.uint8)
-                    img = cv2.imdecode(img_buffer, cv2.IMREAD_GRAYSCALE)
+                img_buffer = np.frombuffer(buf.read(), dtype=np.uint8)
+                img = cv2.cvtColor(cv2.imdecode(img_buffer, cv2.IMREAD_COLOR), 
+                                   cv2.COLOR_BGR2RGB)  # for color image
 
+                if self.transforms is not None:
+                    img = self.transforms(image=img)['image']
+                
+                if not self.opt.rgb:
+                    img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+            
             except IOError:
                 print(f'Corrupted image for {index}')
                 # make dummy image and dummy label for corrupted image.
