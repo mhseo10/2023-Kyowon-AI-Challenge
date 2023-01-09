@@ -212,6 +212,7 @@ def train(opt):
             criterion = torch.nn.CTCLoss(zero_infinity=True).to(device)
     else:
         criterion = torch.nn.CrossEntropyLoss(ignore_index=0).to(device)  # ignore [GO] token = ignore index 0
+    
     # loss averager
     loss_avg = Averager()
 
@@ -234,6 +235,8 @@ def train(opt):
         print('Trainable params num : ', sum(params_num))
         print("Optimizer:")
         print(optimizer)
+        
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, opt.num_iter, eta_min=0.01)
 
     """ final options """
     # print(opt)
@@ -339,6 +342,8 @@ def train(opt):
                     print(loss_model_log)
                     print(predicted_result_log)
 
+        scheduler.step()
+        
         # save model per 1e+5 iter.
         if (iteration + 1) % 1e+5 == 0:
             torch.save(
